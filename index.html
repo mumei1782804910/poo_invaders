@@ -106,6 +106,26 @@ const EDMUND_PAL = {
   G: "#8a93a5", Y: "#fbbf24",
 };
 
+// Edmund with the machine gun power-up: fat triple-wide barrel + magazine
+const EDMUND_MG_MAP = [
+  "...KKKKKK..YYY..",
+  "..KKKKKKKK.GGG..",
+  "..KKKKKKKK.GGG..",
+  "..KSSSSSSK.GGG..",
+  "..KSKSSKSK.GGG..",
+  "..KSSSSSSK.GGG..",
+  "...SSKKSS..GGG..",
+  "....SSSS...GGG..",
+  "..BBBBBBBB.GGG..",
+  ".BBBBBBBBBSSGG..",
+  ".S.BBBBBB..KGK..",
+  "....BBBB...KK...",
+  "....DDDD........",
+  "....D..D........",
+  "....D..D........",
+  "...KK..KK.......",
+];
+
 // Cute kawaii poo (open eyes + happy blink frame)
 const POO_MAP = [
   ".....KK.....",
@@ -157,6 +177,7 @@ const HEART_MAP = [
 const HEART_PAL = { H: "#ef4444" };
 
 const sprEdmund   = makeSprite(EDMUND_MAP, EDMUND_PAL, 4);   // 56 x 64
+const sprEdmundMG = makeSprite(EDMUND_MG_MAP, EDMUND_PAL, 4); // 64 x 64
 const sprPoo      = makeSprite(POO_MAP, POO_PAL, 4);         // 48 x 40
 const sprPooBlink = makeSprite(POO_BLINK_MAP, POO_PAL, 4);
 const sprBlob     = makeSprite(BLOB_MAP, POO_PAL, 3);        // 18 x 18
@@ -222,6 +243,8 @@ function sfxShoot() { if (!ac) return; tone(880, ac.currentTime, 0.09, "square",
 function sfxPop()   { if (!ac) return; const t = ac.currentTime; tone(240, t, 0.12, "square", 0.14, masterGain, 900); noiseHit(t, 0.1, 0.12, 2200, masterGain); }
 function sfxHurt()  { if (!ac) return; tone(320, ac.currentTime, 0.3, "sawtooth", 0.2, masterGain, 70); }
 function sfxDive()  { if (!ac) return; const t = ac.currentTime; tone(1200, t, 0.5, "square", 0.08, masterGain, 200); tone(900, t + 0.05, 0.5, "square", 0.06, masterGain, 150); }
+function sfxPower() { if (!ac) return; const t = ac.currentTime; [523, 659, 784, 1047].forEach((f, i) => tone(f, t + i * 0.08, 0.12, "square", 0.14, masterGain)); }
+function sfxHeal()  { if (!ac) return; const t = ac.currentTime; tone(660, t, 0.12, "triangle", 0.16, masterGain); tone(880, t + 0.1, 0.16, "triangle", 0.16, masterGain); }
 function sfxBoom()  {
   if (!ac) return;
   const t = ac.currentTime;
@@ -277,6 +300,8 @@ let state = "title";      // title | playing | dying | gameover
 let player = { x: LW / 2, y: LH - 90, hp: 3, inv: 0 };
 let bullets = [], blobs = [], poos = [], particles = [], splats = [];
 let fleetDir, fleetBaseSpeed, fleetTotal, dropTimer, fireTimer, diveTimer;
+let machineTimer = 0;
+const MACHINE_GUN_TIME = 10;
 let score = 0, wave = 1, hiscore = 0;
 let shake = 0, dieTimer = 0, waveBanner = 0;
 let stars = [];
@@ -297,7 +322,7 @@ function spawnFleet() {
     for (let c = 0; c < cols; c++) {
       poos.push({
         x: startX + c * spacingX,
-        y: 110 + r * spacingY,
+        y: 140 + r * spacingY,
         alive: true,
         wob: Math.random() * Math.PI * 2,
         blink: 0,
@@ -316,7 +341,7 @@ function spawnFleet() {
 function newGame() {
   player = { x: LW / 2, y: LH - 90, hp: 3, inv: 0 };
   bullets = []; blobs = []; particles = []; splats = [];
-  score = 0; wave = 1; shake = 0; fireTimer = 0;
+  score = 0; wave = 1; shake = 0; fireTimer = 0; machineTimer = 0;
   spawnFleet();
   waveBanner = 1.4;
   state = "playing";
@@ -455,11 +480,13 @@ function update(dt) {
   player.x += Math.abs(dx) < maxStep ? dx : Math.sign(dx) * maxStep;
   if (player.inv > 0) player.inv -= dt;
 
-  // --- Auto-fire ---
+  // --- Auto-fire (machine gun power-up fires 2x faster) ---
+  if (machineTimer > 0) machineTimer -= dt;
   fireTimer -= dt;
   if (fireTimer <= 0) {
-    fireTimer = 0.28;
-    bullets.push({ x: player.x + 22, y: player.y - PLAYER_H / 2 - 4 });
+    const mg = machineTimer > 0;
+    fireTimer = mg ? 0.14 : 0.28;
+    bullets.push({ x: player.x + (mg ? 18 : 22), y: player.y - PLAYER_H / 2 - 4 });
     sfxShoot();
   }
   for (let i = bullets.length - 1; i >= 0; i--) {
@@ -528,6 +555,11 @@ function update(dt) {
         score += 10;
         burst(p.x, p.y, 14, POO_COLORS, 180);
         sfxPop();
+        // shooting a dive-bombing poo: 33% chance to win the machine gun
+        if (p.diving && Math.random() < 1 / 3) {
+          machineTimer = MACHINE_GUN_TIME;
+          sfxPower();
+        }
         break;
       }
     }
@@ -565,9 +597,11 @@ function update(dt) {
   if (poos.every(p => !p.alive) && state === "playing") {
     wave++;
     score += 50;
+    player.hp = 3; // fresh hearts every stage
     spawnFleet();
     waveBanner = 1.4;
     sfxWave();
+    sfxHeal();
   }
 }
 
@@ -584,7 +618,8 @@ function drawPixelText(text, x, y, size, color, align) {
 }
 
 function drawEdmund(x, y, covered) {
-  ctx.drawImage(sprEdmund, x - PLAYER_W / 2, y - PLAYER_H / 2);
+  const spr = machineTimer > 0 ? sprEdmundMG : sprEdmund;
+  ctx.drawImage(spr, x - spr.width / 2, y - PLAYER_H / 2);
   if (covered) {
     for (const s of splats) {
       if (s.delay > 0) continue;
@@ -691,6 +726,13 @@ function draw(dt) {
       ctx.drawImage(sprHeart, 14 + i * 34, 50);
     }
     ctx.globalAlpha = 1;
+    if (machineTimer > 0) {
+      drawPixelText("MACHINE GUN!", 14, 96, 20, "#fbbf24", "left");
+      ctx.fillStyle = "#3d2d63";
+      ctx.fillRect(14, 108, 140, 8);
+      ctx.fillStyle = "#fbbf24";
+      ctx.fillRect(14, 108, 140 * (machineTimer / MACHINE_GUN_TIME), 8);
+    }
 
     if (waveBanner > 0 && state === "playing") {
       ctx.globalAlpha = Math.min(1, waveBanner);
