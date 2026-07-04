@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#141026">
+<title>Poo Invaders 💩</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: #141026;
+    height: 100%;
+    overflow: hidden;
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+  #game {
+    display: block;
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  #mute {
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    z-index: 10;
+    width: 44px; height: 44px;
+    font-size: 22px;
+    background: rgba(255,255,255,0.12);
+    border: 2px solid rgba(255,255,255,0.35);
+    border-radius: 10px;
+    color: #fff;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<button id="mute" aria-label="Toggle sound">🔊</button>
+<script>
+"use strict";
+
+/* ============================== Setup ============================== */
+
+const LW = 480, LH = 800;              // logical game size
+const cv = document.getElementById("game");
+const ctx = cv.getContext("2d");
+let scale = 1, ox = 0, oy = 0, dpr = 1;
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  cv.width  = Math.round(window.innerWidth  * dpr);
+  cv.height = Math.round(window.innerHeight * dpr);
+  scale = Math.min(cv.width / LW, cv.height / LH);
+  ox = (cv.width  - LW * scale) / 2;
+  oy = (cv.height - LH * scale) / 2;
+}
+window.addEventListener("resize", resize);
+resize();
+
+/* ============================ Pixel sprites ============================ */
+
+function makeSprite(map, palette, px) {
+  const h = map.length, w = map[0].length;
+  const c = document.createElement("canvas");
+  c.width = w * px; c.height = h * px;
+  const g = c.getContext("2d");
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const ch = map[y][x];
+      if (ch === ".") continue;
+      g.fillStyle = palette[ch];
+      g.fillRect(x * px, y * px, px, px);
+    }
+  }
+  return c;
+}
+
+// Edmund: black-haired boy holding a gun (barrel points up on his right)
+const EDMUND_MAP = [
+  "....KKKKKK..Y.",
+  "...KKKKKKKK.G.",
+  "...KKKKKKKK.G.",
+  "...KSSSSSSK.G.",
+  "...KSKSSKSK.G.",
+  "...KSSSSSSK.G.",
+  "....SSKKSS..G.",
+  ".....SSSS...G.",
+  "...BBBBBBBB.G.",
+  "..BBBBBBBBBSS.",
+  "..S.BBBBBB....",
+  ".....BBBB.....",
+  ".....DDDD.....",
+  ".....D..D.....",
+  ".....D..D.....",
+  "....KK..KK....",
+];
+const EDMUND_PAL = {
+  K: "#17141f", S: "#ffd9b3", B: "#3b82f6", D: "#1e40af",
+  G: "#8a93a5", Y: "#fbbf24",
+};
+
+// Cute kawaii poo (open eyes + happy blink frame)
+const POO_MAP = [
+  ".....KK.....",
+  "....KPPK....",
+  "...KPPPPK...",
+  "..KPPPPPPK..",
+  ".KPWWPPWWPK.",
+  ".KPWDPPWDPK.",
+  "KPPPPPPPPPPK",
+  "KPRPPPPPPRPK",
+  "KPPPKKKKPPPK",
+  ".KKKKKKKKKK.",
+];
+const POO_BLINK_MAP = [
+  ".....KK.....",
+  "....KPPK....",
+  "...KPPPPK...",
+  "..KPPPPPPK..",
+  ".KPKKPPKKPK.",
+  ".KPPPPPPPPK.",
+  "KPPPPPPPPPPK",
+  "KPRPPPPPPRPK",
+  "KPPPKKKKPPPK",
+  ".KKKKKKKKKK.",
+];
+const POO_PAL = {
+  K: "#5b3a1a", P: "#b97a3c", W: "#ffffff", D: "#2b1a0a", R: "#f2a0a0",
+};
+
+// Small poo blob (enemy projectile)
+const BLOB_MAP = [
+  "..KK..",
+  ".KPPK.",
+  "KPPPPK",
+  "KPPPPK",
+  ".KPPK.",
+  "..KK..",
+];
+
+// Heart for the health bar
+const HEART_MAP = [
+  ".HH.HH.",
+  "HHHHHHH",
+  "HHHHHHH",
+  ".HHHHH.",
+  "..HHH..",
+  "...H...",
+];
+const HEART_PAL = { H: "#ef4444" };
+
+const sprEdmund   = makeSprite(EDMUND_MAP, EDMUND_PAL, 4);   // 56 x 64
+const sprPoo      = makeSprite(POO_MAP, POO_PAL, 4);         // 48 x 40
+const sprPooBlink = makeSprite(POO_BLINK_MAP, POO_PAL, 4);
+const sprBlob     = makeSprite(BLOB_MAP, POO_PAL, 3);        // 18 x 18
+const sprHeart    = makeSprite(HEART_MAP, HEART_PAL, 4);     // 28 x 24
+
+const PLAYER_W = sprEdmund.width, PLAYER_H = sprEdmund.height;
+const POO_W = sprPoo.width, POO_H = sprPoo.height;
+
+/* ============================== Audio ============================== */
+
+let ac = null, masterGain = null, musicGain = null;
+let muted = false;
+let musicTimer = null, musicStep = 0, nextNoteTime = 0;
+
+function initAudio() {
+  if (ac) { if (ac.state === "suspended") ac.resume(); return; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  ac = new AC();
+  masterGain = ac.createGain();
+  masterGain.gain.value = muted ? 0 : 1;
+  masterGain.connect(ac.destination);
+  musicGain = ac.createGain();
+  musicGain.gain.value = 0.5;
+  musicGain.connect(masterGain);
+}
+
+let noiseBuf = null;
+function getNoiseBuf() {
+  if (noiseBuf) return noiseBuf;
+  noiseBuf = ac.createBuffer(1, ac.sampleRate * 0.5, ac.sampleRate);
+  const d = noiseBuf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  return noiseBuf;
+}
+
+function tone(freq, time, dur, type, vol, dest, endFreq) {
+  const o = ac.createOscillator();
+  const g = ac.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, time);
+  if (endFreq) o.frequency.exponentialRampToValueAtTime(endFreq, time + dur);
+  g.gain.setValueAtTime(vol, time);
+  g.gain.exponentialRampToValueAtTime(0.001, time + dur);
+  o.connect(g); g.connect(dest);
+  o.start(time); o.stop(time + dur + 0.02);
+}
+
+function noiseHit(time, dur, vol, filterFreq, dest) {
+  const src = ac.createBufferSource();
+  src.buffer = getNoiseBuf();
+  const f = ac.createBiquadFilter();
+  f.type = "lowpass"; f.frequency.value = filterFreq;
+  const g = ac.createGain();
+  g.gain.setValueAtTime(vol, time);
+  g.gain.exponentialRampToValueAtTime(0.001, time + dur);
+  src.connect(f); f.connect(g); g.connect(dest);
+  src.start(time); src.stop(time + dur + 0.02);
+}
+
+// --- Sound effects ---
+function sfxShoot() { if (!ac) return; tone(880, ac.currentTime, 0.09, "square", 0.10, masterGain, 220); }
+function sfxPop()   { if (!ac) return; const t = ac.currentTime; tone(240, t, 0.12, "square", 0.14, masterGain, 900); noiseHit(t, 0.1, 0.12, 2200, masterGain); }
+function sfxHurt()  { if (!ac) return; tone(320, ac.currentTime, 0.3, "sawtooth", 0.2, masterGain, 70); }
+function sfxBoom()  {
+  if (!ac) return;
+  const t = ac.currentTime;
+  noiseHit(t, 0.9, 0.5, 500, masterGain);
+  tone(90, t, 0.8, "sine", 0.4, masterGain, 28);
+}
+function sfxWave()  { if (!ac) return; const t = ac.currentTime; tone(523, t, 0.1, "square", 0.12, masterGain); tone(659, t + 0.1, 0.1, "square", 0.12, masterGain); tone(784, t + 0.2, 0.18, "square", 0.12, masterGain); }
+
+// --- Chiptune loop: Am / G / F / E, square lead + triangle bass + noise hats ---
+const MELODY = [
+  440.0, 523.25, 659.25, 523.25,   // Am
+  392.0, 493.88, 587.33, 493.88,   // G
+  349.23, 440.0, 523.25, 440.0,    // F
+  329.63, 415.30, 493.88, 415.30,  // E
+];
+const BASS = [110, 110, 110, 110, 98, 98, 98, 98, 87.31, 87.31, 87.31, 87.31, 82.41, 82.41, 82.41, 82.41];
+
+function scheduleMusicStep(step, time) {
+  const stepDur = Math.max(0.14, 0.2 - (wave - 1) * 0.006);
+  tone(MELODY[step], time, stepDur * 0.9, "square", 0.07, musicGain);
+  if (step % 2 === 0) tone(BASS[step], time, stepDur * 1.6, "triangle", 0.16, musicGain);
+  noiseHit(time, 0.03, step % 4 === 2 ? 0.06 : 0.03, 6000, musicGain);
+  return stepDur;
+}
+
+function startMusic() {
+  if (!ac || musicTimer) return;
+  musicStep = 0;
+  nextNoteTime = ac.currentTime + 0.05;
+  musicTimer = setInterval(() => {
+    while (nextNoteTime < ac.currentTime + 0.15) {
+      const dur = scheduleMusicStep(musicStep, nextNoteTime);
+      nextNoteTime += dur;
+      musicStep = (musicStep + 1) % 16;
+    }
+  }, 40);
+}
+function stopMusic() {
+  if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
+}
+
+const muteBtn = document.getElementById("mute");
+muteBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  muted = !muted;
+  muteBtn.textContent = muted ? "🔇" : "🔊";
+  if (masterGain) masterGain.gain.value = muted ? 0 : 1;
+});
+
+/* ============================== Game state ============================== */
+
+let state = "title";      // title | playing | dying | gameover
+let player = { x: LW / 2, y: LH - 90, hp: 3, inv: 0 };
+let bullets = [], blobs = [], poos = [], particles = [], splats = [];
+let fleetDir, fleetBaseSpeed, fleetTotal, dropTimer, fireTimer;
+let score = 0, wave = 1, hiscore = 0;
+let shake = 0, dieTimer = 0, waveBanner = 0;
+let stars = [];
+
+try { hiscore = parseInt(localStorage.getItem("pooInvadersHiscore")) || 0; } catch (e) {}
+
+for (let i = 0; i < 60; i++) {
+  stars.push({ x: Math.random() * LW, y: Math.random() * LH, s: Math.random() * 1.5 + 0.5, v: Math.random() * 20 + 8 });
+}
+
+function spawnFleet() {
+  poos = [];
+  const cols = 6;
+  const rows = Math.min(2 + wave, 5);
+  const spacingX = 68, spacingY = 56;
+  const startX = (LW - (cols - 1) * spacingX) / 2;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      poos.push({
+        x: startX + c * spacingX,
+        y: 110 + r * spacingY,
+        alive: true,
+        wob: Math.random() * Math.PI * 2,
+        blink: 0,
+      });
+    }
+  }
+  fleetDir = 1;
+  fleetBaseSpeed = 36 + wave * 9;
+  fleetTotal = poos.length;
+  dropTimer = 1.2;
+}
+
+function newGame() {
+  player = { x: LW / 2, y: LH - 90, hp: 3, inv: 0 };
+  bullets = []; blobs = []; particles = []; splats = [];
+  score = 0; wave = 1; shake = 0; fireTimer = 0;
+  spawnFleet();
+  waveBanner = 1.4;
+  state = "playing";
+  startMusic();
+}
+
+/* ============================== Input ============================== */
+
+let targetX = LW / 2;
+let keyLeft = false, keyRight = false;
+
+function toLogicalX(clientX) {
+  return (clientX * dpr - ox) / scale;
+}
+
+function pressAt(clientX) {
+  initAudio();
+  if (state === "title") { newGame(); return; }
+  if (state === "gameover") { newGame(); return; }
+  if (state === "playing") targetX = toLogicalX(clientX);
+}
+
+cv.addEventListener("pointerdown", (e) => { e.preventDefault(); pressAt(e.clientX); });
+cv.addEventListener("pointermove", (e) => {
+  if (e.buttons > 0 || e.pointerType === "touch") targetX = toLogicalX(e.clientX);
+});
+cv.addEventListener("touchstart", (e) => { e.preventDefault(); if (e.touches[0]) pressAt(e.touches[0].clientX); }, { passive: false });
+cv.addEventListener("touchmove",  (e) => { e.preventDefault(); if (e.touches[0]) targetX = toLogicalX(e.touches[0].clientX); }, { passive: false });
+
+window.addEventListener("keydown", (e) => {
+  if (e.code === "ArrowLeft"  || e.code === "KeyA") keyLeft = true;
+  if (e.code === "ArrowRight" || e.code === "KeyD") keyRight = true;
+  if (e.code === "Space" || e.code === "Enter") {
+    initAudio();
+    if (state === "title" || state === "gameover") newGame();
+  }
+});
+window.addEventListener("keyup", (e) => {
+  if (e.code === "ArrowLeft"  || e.code === "KeyA") keyLeft = false;
+  if (e.code === "ArrowRight" || e.code === "KeyD") keyRight = false;
+});
+
+/* ============================== Particles ============================== */
+
+function burst(x, y, n, colors, speed) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const v = (0.3 + Math.random() * 0.7) * speed;
+    particles.push({
+      x, y,
+      vx: Math.cos(a) * v, vy: Math.sin(a) * v - speed * 0.25,
+      life: 0.5 + Math.random() * 0.5,
+      t: 0,
+      r: 2 + Math.random() * 4,
+      color: colors[(Math.random() * colors.length) | 0],
+    });
+  }
+}
+
+const POO_COLORS = ["#b97a3c", "#8b5a2b", "#5b3a1a", "#d29456"];
+
+/* ============================== Update ============================== */
+
+function damagePlayer() {
+  if (player.inv > 0 || state !== "playing") return;
+  player.hp--;
+  player.inv = 1.5;
+  shake = 12;
+  sfxHurt();
+  if (player.hp <= 0) startDying();
+}
+
+function startDying() {
+  state = "dying";
+  dieTimer = 1.8;
+  stopMusic();
+  sfxBoom();
+  shake = 24;
+  // Every poo explodes toward Edmund and splats onto him
+  burst(player.x, player.y, 60, POO_COLORS, 260);
+  for (const p of poos) {
+    if (!p.alive) continue;
+    burst(p.x, p.y, 6, POO_COLORS, 160);
+  }
+  for (let i = 0; i < 26; i++) {
+    splats.push({
+      x: player.x + (Math.random() - 0.5) * PLAYER_W * 1.4,
+      y: player.y - PLAYER_H / 2 + Math.random() * PLAYER_H * 1.1,
+      r: 4 + Math.random() * 11,
+      color: POO_COLORS[(Math.random() * POO_COLORS.length) | 0],
+      delay: Math.random() * 0.9,
+    });
+  }
+}
+
+function update(dt) {
+  // stars always drift
+  for (const s of stars) {
+    s.y += s.v * dt;
+    if (s.y > LH) { s.y = -2; s.x = Math.random() * LW; }
+  }
+
+  // particles always animate
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.t += dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 420 * dt;
+    if (p.t > p.life) particles.splice(i, 1);
+  }
+
+  if (shake > 0) shake = Math.max(0, shake - 40 * dt);
+  if (waveBanner > 0) waveBanner -= dt;
+
+  if (state === "dying") {
+    dieTimer -= dt;
+    if (dieTimer <= 0) {
+      state = "gameover";
+      if (score > hiscore) {
+        hiscore = score;
+        try { localStorage.setItem("pooInvadersHiscore", String(hiscore)); } catch (e) {}
+      }
+    }
+    return;
+  }
+
+  if (state !== "playing") return;
+
+  // --- Player movement ---
+  if (keyLeft)  targetX -= 420 * dt;
+  if (keyRight) targetX += 420 * dt;
+  targetX = Math.max(PLAYER_W / 2, Math.min(LW - PLAYER_W / 2, targetX));
+  const dx = targetX - player.x;
+  const maxStep = 560 * dt;
+  player.x += Math.abs(dx) < maxStep ? dx : Math.sign(dx) * maxStep;
+  if (player.inv > 0) player.inv -= dt;
+
+  // --- Auto-fire ---
+  fireTimer -= dt;
+  if (fireTimer <= 0) {
+    fireTimer = 0.28;
+    bullets.push({ x: player.x + 22, y: player.y - PLAYER_H / 2 - 4 });
+    sfxShoot();
+  }
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    bullets[i].y -= 720 * dt;
+    if (bullets[i].y < -20) bullets.splice(i, 1);
+  }
+
+  // --- Fleet movement (speeds up as poos die, classic invaders style) ---
+  const alive = poos.filter(p => p.alive);
+  const speed = fleetBaseSpeed * (1 + (1 - alive.length / fleetTotal) * 1.4);
+  let minX = Infinity, maxX = -Infinity;
+  for (const p of alive) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); }
+  let drop = false;
+  if (fleetDir > 0 && maxX > LW - POO_W / 2 - 10) { fleetDir = -1; drop = true; }
+  if (fleetDir < 0 && minX < POO_W / 2 + 10)      { fleetDir = 1;  drop = true; }
+  for (const p of alive) {
+    p.x += fleetDir * speed * dt;
+    if (drop) p.y += 26;
+    p.wob += dt * 4;
+    p.blink -= dt;
+    if (p.blink < -3 && Math.random() < dt * 0.4) p.blink = 0.25;
+  }
+
+  // --- Poo drops blobs ---
+  dropTimer -= dt;
+  if (dropTimer <= 0 && alive.length > 0) {
+    dropTimer = Math.max(0.35, 1.0 - wave * 0.07) * (0.6 + Math.random() * 0.8);
+    const shooter = alive[(Math.random() * alive.length) | 0];
+    blobs.push({ x: shooter.x, y: shooter.y + POO_H / 2, vy: 200 + wave * 22, r: 0 });
+  }
+  for (let i = blobs.length - 1; i >= 0; i--) {
+    blobs[i].y += blobs[i].vy * dt;
+    blobs[i].r += dt * 8;
+    if (blobs[i].y > LH + 20) blobs.splice(i, 1);
+  }
+
+  // --- Bullet vs poo ---
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    for (const p of poos) {
+      if (!p.alive) continue;
+      if (Math.abs(b.x - p.x) < POO_W / 2 && Math.abs(b.y - p.y) < POO_H / 2 + 6) {
+        p.alive = false;
+        bullets.splice(i, 1);
+        score += 10;
+        burst(p.x, p.y, 14, POO_COLORS, 180);
+        sfxPop();
+        break;
+      }
+    }
+  }
+
+  // --- Blob vs Edmund ---
+  const px0 = player.x - PLAYER_W / 2, px1 = player.x + PLAYER_W / 2;
+  const py0 = player.y - PLAYER_H / 2, py1 = player.y + PLAYER_H / 2;
+  for (let i = blobs.length - 1; i >= 0; i--) {
+    const b = blobs[i];
+    if (b.x > px0 - 6 && b.x < px1 + 6 && b.y > py0 && b.y < py1 + 8) {
+      blobs.splice(i, 1);
+      burst(b.x, b.y, 10, POO_COLORS, 140);
+      damagePlayer();
+    }
+  }
+
+  // --- Poo vs Edmund / poo reaches the ground ---
+  for (const p of alive) {
+    if (Math.abs(p.x - player.x) < (POO_W + PLAYER_W) / 2 - 8 &&
+        Math.abs(p.y - player.y) < (POO_H + PLAYER_H) / 2 - 8) {
+      p.alive = false;
+      burst(p.x, p.y, 16, POO_COLORS, 200);
+      sfxPop();
+      damagePlayer();
+    } else if (p.y > LH - 46) {
+      p.alive = false;
+      burst(p.x, LH - 40, 16, POO_COLORS, 200);
+      sfxPop();
+      damagePlayer();
+    }
+  }
+
+  // --- Wave cleared ---
+  if (poos.every(p => !p.alive) && state === "playing") {
+    wave++;
+    score += 50;
+    spawnFleet();
+    waveBanner = 1.4;
+    sfxWave();
+  }
+}
+
+/* ============================== Draw ============================== */
+
+function drawPixelText(text, x, y, size, color, align) {
+  ctx.font = `bold ${size}px 'Courier New', monospace`;
+  ctx.textAlign = align || "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#000";
+  ctx.fillText(text, x + size * 0.08, y + size * 0.08);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+}
+
+function drawEdmund(x, y, covered) {
+  ctx.drawImage(sprEdmund, x - PLAYER_W / 2, y - PLAYER_H / 2);
+  if (covered) {
+    for (const s of splats) {
+      if (s.delay > 0) continue;
+      ctx.fillStyle = s.color;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function draw(dt) {
+  // letterbox background
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#0b0918";
+  ctx.fillRect(0, 0, cv.width, cv.height);
+
+  const sx = (Math.random() - 0.5) * shake * scale;
+  const sy = (Math.random() - 0.5) * shake * scale;
+  ctx.setTransform(scale, 0, 0, scale, ox + sx, oy + sy);
+
+  // playfield background
+  const grad = ctx.createLinearGradient(0, 0, 0, LH);
+  grad.addColorStop(0, "#1b1440");
+  grad.addColorStop(1, "#2a1a4a");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, LW, LH);
+
+  ctx.fillStyle = "#cbc3ee";
+  for (const s of stars) ctx.fillRect(s.x, s.y, s.s, s.s);
+
+  // ground line
+  ctx.fillStyle = "#3d2d63";
+  ctx.fillRect(0, LH - 26, LW, 26);
+
+  ctx.imageSmoothingEnabled = false;
+
+  if (state === "title") {
+    drawPixelText("POO", LW / 2, 190, 84, "#b97a3c");
+    drawPixelText("INVADERS", LW / 2, 268, 58, "#fbbf24");
+    const bob = Math.sin(performance.now() / 300) * 8;
+    ctx.drawImage(sprPoo, LW / 2 - POO_W / 2, 330 + bob);
+    drawEdmund(LW / 2, LH - 200, false);
+    drawPixelText("Help Edmund shoot the poo!", LW / 2, 470, 22, "#ffffff");
+    drawPixelText("Drag to move · auto-fire", LW / 2, 505, 20, "#a99ee0");
+    if (Math.floor(performance.now() / 500) % 2 === 0) {
+      drawPixelText("TAP TO START", LW / 2, LH - 110, 30, "#4ade80");
+    }
+    if (hiscore > 0) drawPixelText("BEST " + hiscore, LW / 2, 60, 22, "#fbbf24");
+  } else {
+    // poos
+    for (const p of poos) {
+      if (!p.alive) continue;
+      const wob = Math.sin(p.wob) * 3;
+      const spr = p.blink > 0 ? sprPooBlink : sprPoo;
+      ctx.drawImage(spr, p.x - POO_W / 2, p.y - POO_H / 2 + wob);
+    }
+
+    // bullets
+    ctx.fillStyle = "#fde047";
+    for (const b of bullets) ctx.fillRect(b.x - 3, b.y - 10, 6, 16);
+
+    // blobs
+    for (const b of blobs) {
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.rotate(b.r);
+      ctx.drawImage(sprBlob, -sprBlob.width / 2, -sprBlob.height / 2);
+      ctx.restore();
+    }
+
+    // Edmund (flicker while invulnerable)
+    const flicker = player.inv > 0 && Math.floor(performance.now() / 80) % 2 === 0;
+    if (state === "dying" || state === "gameover") {
+      for (const s of splats) s.delay -= dt;
+      drawEdmund(player.x, player.y, true);
+    } else if (!flicker) {
+      drawEdmund(player.x, player.y, false);
+    }
+
+    // particles
+    for (const p of particles) {
+      ctx.globalAlpha = Math.max(0, 1 - p.t / p.life);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // HUD
+    drawPixelText("SCORE " + score, 14, 34, 24, "#ffffff", "left");
+    drawPixelText("WAVE " + wave, LW / 2, 34, 24, "#a99ee0");
+    for (let i = 0; i < 3; i++) {
+      ctx.globalAlpha = i < player.hp ? 1 : 0.2;
+      ctx.drawImage(sprHeart, 14 + i * 34, 50);
+    }
+    ctx.globalAlpha = 1;
+
+    if (waveBanner > 0 && state === "playing") {
+      ctx.globalAlpha = Math.min(1, waveBanner);
+      drawPixelText("WAVE " + wave, LW / 2, LH / 2 - 60, 52, "#4ade80");
+      ctx.globalAlpha = 1;
+    }
+
+    if (state === "gameover") {
+      ctx.fillStyle = "rgba(10, 6, 20, 0.65)";
+      ctx.fillRect(0, 0, LW, LH);
+      drawPixelText("GAME OVER", LW / 2, 250, 56, "#ef4444");
+      drawPixelText("Edmund got pooped! 💩", LW / 2, 320, 26, "#b97a3c");
+      drawPixelText("SCORE " + score, LW / 2, 390, 34, "#ffffff");
+      drawPixelText("BEST " + hiscore, LW / 2, 435, 26, "#fbbf24");
+      if (Math.floor(performance.now() / 500) % 2 === 0) {
+        drawPixelText("TAP TO RETRY", LW / 2, 540, 30, "#4ade80");
+      }
+    }
+  }
+}
+
+/* ============================== Main loop ============================== */
+
+let lastTime = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+  update(dt);
+  draw(dt);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
