@@ -221,6 +221,7 @@ function noiseHit(time, dur, vol, filterFreq, dest) {
 function sfxShoot() { if (!ac) return; tone(880, ac.currentTime, 0.09, "square", 0.10, masterGain, 220); }
 function sfxPop()   { if (!ac) return; const t = ac.currentTime; tone(240, t, 0.12, "square", 0.14, masterGain, 900); noiseHit(t, 0.1, 0.12, 2200, masterGain); }
 function sfxHurt()  { if (!ac) return; tone(320, ac.currentTime, 0.3, "sawtooth", 0.2, masterGain, 70); }
+function sfxDive()  { if (!ac) return; const t = ac.currentTime; tone(1200, t, 0.5, "square", 0.08, masterGain, 200); tone(900, t + 0.05, 0.5, "square", 0.06, masterGain, 150); }
 function sfxBoom()  {
   if (!ac) return;
   const t = ac.currentTime;
@@ -275,7 +276,7 @@ muteBtn.addEventListener("click", (e) => {
 let state = "title";      // title | playing | dying | gameover
 let player = { x: LW / 2, y: LH - 90, hp: 3, inv: 0 };
 let bullets = [], blobs = [], poos = [], particles = [], splats = [];
-let fleetDir, fleetBaseSpeed, fleetTotal, dropTimer, fireTimer;
+let fleetDir, fleetBaseSpeed, fleetTotal, dropTimer, fireTimer, diveTimer;
 let score = 0, wave = 1, hiscore = 0;
 let shake = 0, dieTimer = 0, waveBanner = 0;
 let stars = [];
@@ -300,6 +301,8 @@ function spawnFleet() {
         alive: true,
         wob: Math.random() * Math.PI * 2,
         blink: 0,
+        diving: false,
+        vy: 0,
       });
     }
   }
@@ -307,6 +310,7 @@ function spawnFleet() {
   fleetBaseSpeed = 36 + wave * 9;
   fleetTotal = poos.length;
   dropTimer = 1.2;
+  diveTimer = 4;
 }
 
 function newGame() {
@@ -465,13 +469,14 @@ function update(dt) {
 
   // --- Fleet movement (speeds up as poos die, classic invaders style) ---
   const alive = poos.filter(p => p.alive);
+  const fleet = alive.filter(p => !p.diving);
   const speed = fleetBaseSpeed * (1 + (1 - alive.length / fleetTotal) * 1.4);
   let minX = Infinity, maxX = -Infinity;
-  for (const p of alive) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); }
+  for (const p of fleet) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); }
   let drop = false;
   if (fleetDir > 0 && maxX > LW - POO_W / 2 - 10) { fleetDir = -1; drop = true; }
   if (fleetDir < 0 && minX < POO_W / 2 + 10)      { fleetDir = 1;  drop = true; }
-  for (const p of alive) {
+  for (const p of fleet) {
     p.x += fleetDir * speed * dt;
     if (drop) p.y += 26;
     p.wob += dt * 4;
@@ -479,11 +484,31 @@ function update(dt) {
     if (p.blink < -3 && Math.random() < dt * 0.4) p.blink = 0.25;
   }
 
+  // --- Kamikaze divers: sometimes a poo drops down at Edmund ---
+  diveTimer -= dt;
+  if (diveTimer <= 0 && fleet.length > 0) {
+    diveTimer = Math.max(1.2, 4.5 - wave * 0.4) * (0.7 + Math.random() * 0.6);
+    const diver = fleet[(Math.random() * fleet.length) | 0];
+    diver.diving = true;
+    diver.vy = 150 + wave * 18;
+    sfxDive();
+  }
+  for (const p of alive) {
+    if (!p.diving) continue;
+    p.wob += dt * 10;
+    p.vy += 220 * dt;
+    p.y += p.vy * dt;
+    // gentle homing toward Edmund plus a wiggle
+    p.x += Math.sign(player.x - p.x) * Math.min(90, Math.abs(player.x - p.x)) * dt;
+    p.x += Math.sin(p.wob) * 40 * dt;
+    p.blink = 0.1; // happy squint while diving
+  }
+
   // --- Poo drops blobs ---
   dropTimer -= dt;
-  if (dropTimer <= 0 && alive.length > 0) {
+  if (dropTimer <= 0 && fleet.length > 0) {
     dropTimer = Math.max(0.35, 1.0 - wave * 0.07) * (0.6 + Math.random() * 0.8);
-    const shooter = alive[(Math.random() * alive.length) | 0];
+    const shooter = fleet[(Math.random() * fleet.length) | 0];
     blobs.push({ x: shooter.x, y: shooter.y + POO_H / 2, vy: 200 + wave * 22, r: 0 });
   }
   for (let i = blobs.length - 1; i >= 0; i--) {
@@ -532,7 +557,7 @@ function update(dt) {
       p.alive = false;
       burst(p.x, LH - 40, 16, POO_COLORS, 200);
       sfxPop();
-      damagePlayer();
+      if (!p.diving) damagePlayer(); // dodged divers splat harmlessly
     }
   }
 
@@ -615,7 +640,15 @@ function draw(dt) {
       if (!p.alive) continue;
       const wob = Math.sin(p.wob) * 3;
       const spr = p.blink > 0 ? sprPooBlink : sprPoo;
-      ctx.drawImage(spr, p.x - POO_W / 2, p.y - POO_H / 2 + wob);
+      if (p.diving) {
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(Math.sin(p.wob) * 0.35);
+        ctx.drawImage(spr, -POO_W / 2, -POO_H / 2);
+        ctx.restore();
+      } else {
+        ctx.drawImage(spr, p.x - POO_W / 2, p.y - POO_H / 2 + wob);
+      }
     }
 
     // bullets
